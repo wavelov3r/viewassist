@@ -1,0 +1,116 @@
+blueprint:
+  name: "🗣️ View Assist Custom Responses (tts.speak - v1.0)"
+  description: "Plays a random TTS response when a satellite enters listening mode. 
+    Disables the microphone, waits for the END of audio playback and re-enables it safely to avoid loops."
+  domain: automation
+  input:
+    satellites:
+      name: Assist Satellites
+      description: Select one or more satellites (assist_satellite entities) to monitor.
+      selector:
+        entity:
+          domain:
+            - assist_satellite
+          multiple: true
+          reorder: false
+    custom_responses:
+      name: Custom Responses
+      description: 'List of possible random responses the satellite will speak.'
+      default:
+        - "Yes, I'm listening."
+        - "Go ahead."
+      selector:
+        object:
+          multiple: false
+    mute_switch_overrides:
+      name: Mute Switch Override
+      description: 'Optional: Manual mapping of the mute entity. Example: {"assist_satellite.vaca_sala": "switch.custom_mute"}'
+      default: {}
+      selector:
+        object:
+          multiple: false
+    media_player_overrides:
+      name: Media Player Override
+      description: 'Optional: Manual mapping of the media player. Example: {"assist_satellite.vaca_sala": "media_player.living_room_speaker"}'
+      default: {}
+      selector:
+        object:
+          multiple: false
+    mute_active_state:
+      name: Microphone Active State
+      description: 'Select the switch state that corresponds to "microphone active". If enabled, ON = active; if disabled, OFF = active.'
+      default: false
+      selector:
+        boolean: {}
+    reenable_delay:
+      name: Extra Safety Delay (seconds)
+      description: 'Extra wait time AFTER the satellite finishes speaking, before re-opening the microphone (recommended: 1-2s).'
+      default: 1
+      selector:
+        number:
+          min: 0.0
+          max: 5.0
+          step: 0.5
+          unit_of_measurement: s
+          mode: slider
+
+variables:
+  custom_responses: !input custom_responses
+  mute_switch_overrides: !input mute_switch_overrides
+  media_player_overrides: !input media_player_overrides
+  mute_active_state: !input mute_active_state
+  reenable_delay: !input reenable_delay
+
+trigger:
+  - platform: state
+    entity_id: !input satellites
+    to: listening
+
+condition: []
+
+action:
+  - variables:
+      trigger_entity: "{{ trigger.entity_id }}"
+      sat_name: "{{ trigger_entity.split('.')[1] }}"
+      mute_switch: >-
+        {{ mute_switch_overrides.get(trigger_entity) if trigger_entity in mute_switch_overrides
+        else "switch." + sat_name + "_mute" }}
+      media_player: >-
+        {{ media_player_overrides.get(trigger_entity) if trigger_entity in media_player_overrides
+        else "media_player." + sat_name + "_media_player" }}
+      mute_on: "{{ 'off' if mute_active_state else 'on' }}"
+      mute_off: "{{ 'on' if mute_active_state else 'off' }}"
+
+  # 1. Spegne immediatamente il microfono
+  - action: switch.turn_{{ mute_on }}
+    target:
+      entity_id: "{{ mute_switch }}"
+
+  # 2. Invia la frase a Piper
+  - action: tts.speak
+    target:
+      entity_id: tts.piper
+    data:
+      cache: true
+      media_player_entity_id: "{{ media_player }}"
+      message: "{{ custom_responses | random }}"
+
+  # 3. Aspetta un secondo per permettere al player di avviarsi e poi attende che finisca
+  - delay: "00:00:01" 
+  
+  - wait_for_trigger:
+      - platform: template
+        value_template: "{{ states(media_player) in ['idle', 'off', 'paused'] }}"
+    timeout: "00:00:10"
+
+  # 4. Ritardo di sicurezza extra impostato da te
+  - delay:
+      seconds: "{{ reenable_delay }}"
+
+  # 5. Riattiva il microfono
+  - action: switch.turn_{{ mute_off }}
+    target:
+      entity_id: "{{ mute_switch }}"
+
+mode: restart
+max_exceeded: silent
